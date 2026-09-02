@@ -1,6 +1,7 @@
 <?php
-require 'config.php';
-require 'auth.php';
+require '../config.php';
+require '../auth.php';
+require_admin();
 
 $facilities = $conn->query('SELECT * FROM facilities ORDER BY name')->fetch_all(MYSQLI_ASSOC);
 
@@ -15,10 +16,8 @@ $stmt->close();
 
 $timeSlots = $conn->query('SELECT * FROM time_slots ORDER BY sort_order')->fetch_all(MYSQLI_ASSOC);
 
-$uid = current_user_id();
-
 $courtIds = array_column($courts, 'id');
-$bookedSlots = []; // [court_id][time_slot_id] = user_id
+$bookedSlots = []; // [court_id][time_slot_id] = ['name' => ..., 'email' => ...]
 $closedSlots = []; // [court_id][time_slot_id] = reason
 $wholeDayClosed = []; // [court_id] = reason
 
@@ -27,12 +26,17 @@ if ($courtIds !== []) {
     $types = str_repeat('i', count($courtIds)) . 's';
     $params = array_merge($courtIds, [$selectedDate]);
 
-    $stmt = $conn->prepare("SELECT court_id, time_slot_id, user_id FROM bookings WHERE court_id IN ($placeholders) AND booking_date = ?");
+    $stmt = $conn->prepare("
+        SELECT b.court_id, b.time_slot_id, u.name, u.email
+        FROM bookings b
+        JOIN users u ON u.id = b.user_id
+        WHERE b.court_id IN ($placeholders) AND b.booking_date = ?
+    ");
     $stmt->bind_param($types, ...$params);
     $stmt->execute();
     $result = $stmt->get_result();
     while ($row = $result->fetch_assoc()) {
-        $bookedSlots[$row['court_id']][$row['time_slot_id']] = $row['user_id'];
+        $bookedSlots[$row['court_id']][$row['time_slot_id']] = ['name' => $row['name'], 'email' => $row['email']];
     }
     $stmt->close();
 
@@ -53,10 +57,8 @@ if ($courtIds !== []) {
 $pageTitle = 'Facility Schedule';
 require 'partials/header.php';
 ?>
-<div class="page-header">
 <h1>Facility Schedule</h1>
-<p>Check available, booked and closed courts before booking.</p>
-</div>
+<p>See every court's bookings and closures at a glance, including who booked each slot.</p>
 
 <form method="get" class="filter-bar">
 <label>Facility
@@ -66,7 +68,7 @@ require 'partials/header.php';
 <?php endforeach; ?>
 </select>
 </label>
-<label>Date <input type="date" name="date" value="<?= htmlspecialchars($selectedDate) ?>" min="<?= date('Y-m-d') ?>" onchange="this.form.submit()"></label>
+<label>Date <input type="date" name="date" value="<?= htmlspecialchars($selectedDate) ?>" onchange="this.form.submit()"></label>
 <noscript><button type="submit">View</button></noscript>
 </form>
 
@@ -91,35 +93,19 @@ require 'partials/header.php';
 <?php
 $courtId = $court['id'];
 $slotId = $t['id'];
-
-if (isset($wholeDayClosed[$courtId]) || isset($closedSlots[$courtId][$slotId])) {
-    $status = 'Closed';
-    $reason = $wholeDayClosed[$courtId] ?? $closedSlots[$courtId][$slotId];
-    $badgeClass = 'badge-critical';
-    $icon = '&#10005;';
-} elseif (isset($bookedSlots[$courtId][$slotId])) {
-    $isMine = $uid && $bookedSlots[$courtId][$slotId] == $uid;
-    $status = $isMine ? 'Booked by you' : 'Booked';
-    $reason = null;
-    $badgeClass = $isMine ? 'badge-accent' : 'badge-neutral';
-    $icon = $isMine ? '&#10003;' : '&#9679;';
-} else {
-    $status = 'Available';
-    $reason = null;
-    $badgeClass = 'badge-good';
-    $icon = '&#10003;';
-}
+$booking = $bookedSlots[$courtId][$slotId] ?? null;
 ?>
 <td class="schedule-court-td">
 <div class="schedule-cell">
-<span class="badge <?= $badgeClass ?>"><?= $icon ?> <?= htmlspecialchars($status) ?></span>
-<?php if ($reason): ?><span class="stat-label"><?= htmlspecialchars($reason) ?></span><?php endif; ?>
-<?php if ($status === 'Available' && $selectedDate >= date('Y-m-d')): ?>
-<?php if ($uid): ?>
-<a class="btn btn-small" href="create.php?court_id=<?= (int)$courtId ?>&booking_date=<?= htmlspecialchars($selectedDate) ?>&time_slot_id=<?= (int)$slotId ?>">Book</a>
+<?php if (isset($wholeDayClosed[$courtId]) || isset($closedSlots[$courtId][$slotId])): ?>
+<span class="badge badge-critical">&#10005; Closed</span>
+<span class="stat-label"><?= htmlspecialchars($wholeDayClosed[$courtId] ?? $closedSlots[$courtId][$slotId]) ?></span>
+<?php elseif ($booking): ?>
+<span class="badge badge-neutral">&#9679; Booked</span>
+<span class="stat-label"><?= htmlspecialchars($booking['name']) ?></span>
+<span class="stat-label"><?= htmlspecialchars($booking['email']) ?></span>
 <?php else: ?>
-<a class="btn btn-small" href="login.php">Login to Book</a>
-<?php endif; ?>
+<span class="badge badge-good">&#10003; Available</span>
 <?php endif; ?>
 </div>
 </td>
@@ -129,8 +115,4 @@ if (isset($wholeDayClosed[$courtId]) || isset($closedSlots[$courtId][$slotId])) 
 </table>
 </div>
 <?php endif; ?>
-
-<div class="card-actions" style="margin-top:20px;">
-<a class="btn btn-secondary btn-small" href="index.php">Back to Home</a>
-</div>
 <?php require 'partials/footer.php'; ?>
